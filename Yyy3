@@ -1,0 +1,117 @@
+# ============================================================
+# RECOMMENDER SYSTEM WITH IMPLICIT ALS
+# ============================================================
+
+import pandas as pd
+import numpy as np
+
+from scipy.sparse import coo_matrix
+
+from implicit.als import AlternatingLeastSquares
+
+# ============================================================
+# 1. PREPARE DATA
+# ============================================================
+
+df = df_raw.copy()
+
+# aggregate interactions
+interaction_df = (
+    df.groupby(
+        ["origin", "destination"],
+        as_index=False
+    )["volume"]
+    .sum()
+)
+
+# ============================================================
+# 2. CREATE IDS
+# ============================================================
+
+origin_map = {
+    v: i
+    for i, v in enumerate(
+        interaction_df["origin"].unique()
+    )
+}
+
+destination_map = {
+    v: i
+    for i, v in enumerate(
+        interaction_df["destination"].unique()
+    )
+}
+
+interaction_df["origin_id"] = (
+    interaction_df["origin"]
+    .map(origin_map)
+)
+
+interaction_df["destination_id"] = (
+    interaction_df["destination"]
+    .map(destination_map)
+)
+
+# ============================================================
+# 3. SPARSE MATRIX
+# ============================================================
+
+matrix = coo_matrix(
+    (
+        interaction_df["volume"].astype(float),
+        (
+            interaction_df["origin_id"],
+            interaction_df["destination_id"]
+        )
+    )
+)
+
+# ALS expects item-user matrix
+matrix = matrix.tocsr()
+
+# ============================================================
+# 4. TRAIN ALS MODEL
+# ============================================================
+
+model = AlternatingLeastSquares(
+    factors=64,
+    regularization=0.01,
+    iterations=30
+)
+
+model.fit(matrix)
+
+# ============================================================
+# 5. GENERATE RECOMMENDATIONS
+# ============================================================
+
+reverse_destination_map = {
+    v: k
+    for k, v in destination_map.items()
+}
+
+recommendation_rows = []
+
+TOP_K = 20
+
+for origin, origin_id in origin_map.items():
+
+    recommendations = model.recommend(
+        userid=origin_id,
+        user_items=matrix,
+        N=TOP_K
+    )
+
+    for dest_id, score in recommendations:
+
+        recommendation_rows.append({
+            "origin": origin,
+            "destination": reverse_destination_map[dest_id],
+            "rec_score": score
+        })
+
+recommendation_df = pd.DataFrame(
+    recommendation_rows
+)
+
+print(recommendation_df.head())
