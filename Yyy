@@ -1,0 +1,378 @@
+# ============================================================
+# RECOMMENDATION SYSTEM + CATBOOST RANKING
+# FOR FREIGHT LANE PREDICTION
+# ============================================================
+
+# idea:
+#
+# 1. LightFM learns:
+#    which destinations are likely for each origin
+#
+# 2. CatBoost learns:
+#    temporal behavior of lanes
+#
+# 3. Final prediction:
+#    top ranked lanes for next month
+#
+# ============================================================
+
+import pandas as pd
+import numpy as np
+
+from scipy.sparse import coo_matrix
+
+from lightfm import LightFM
+
+from catboost import CatBoostClassifier
+
+# ============================================================
+# 1. PREPARE DATA
+# ============================================================
+
+# df_raw columns:
+#
+# origin
+# destination
+# cargo_type
+# speed
+# date
+# volume
+
+df = df_raw.copy()
+
+df["date"] = pd.to_datetime(df["date"])
+
+df["month"] = df["date"].dt.to_period("M")
+
+# lane id
+df["lane"] = (
+    df["origin"].astype(str)
+    + "_"
+    + df["destination"].astype(str)
+    + "_"
+    + df["cargo_type"].astype(str)
+    + "_"
+    + df["speed"].astype(str)
+)
+
+# ============================================================
+# 2. AGGREGATE MONTHLY
+# ============================================================
+
+monthly = (
+    df.groupby(
+        [
+            "month",
+            "origin",
+            "destination",
+            "cargo_type",
+            "speed",
+            "lane"
+        ],
+        as_index=False
+    )["volume"]
+    .sum()
+)
+
+# binary activity
+monthly["active"] = (
+    monthly["volume"] > 0
+).astype(int)
+
+# ============================================================
+# 3. BUILD INTERACTION MATRIX
+# ============================================================
+
+# recommendation system uses:
+#
+# origin -> destination interactions
+
+interaction_df = (
+    monthly.groupby(
+        ["origin", "destination"],
+        as_index=False
+    )["volume"]
+    .sum()
+)
+
+# mappings
+origin_map = {
+    v: i
+    for i, v in enumerate(
+        interaction_df["origin"].unique()
+    )
+}
+
+destination_map = {
+    v: i
+    for i, v in enumerate(
+        interaction_df["destination"].unique()
+    )
+}
+
+interaction_df["origin_id"] = (
+    interaction_df["origin"]
+    .map(origin_map)
+)
+
+interaction_df["destination_id"] = (
+    interaction_df["destination"]
+    .map(destination_map)
+)
+
+# sparse matrix
+interaction_matrix = coo_matrix(
+    (
+        interaction_df["volume"],
+        (
+            interaction_df["origin_id"],
+            interaction_df["destination_id"]
+        )
+    )
+)
+
+# ============================================================
+# 4. TRAIN LIGHTFM
+# ============================================================
+
+# recommendation model
+
+lightfm_model = LightFM(
+    loss="warp",
+    no_components=32,
+    learning_rate=0.05
+)
+
+lightfm_model.fit(
+    interaction_matrix,
+    epochs=30,
+    num_threads=4
+)
+
+# ============================================================
+# 5. GENERATE CANDIDATE DESTINATIONS
+# ============================================================
+
+top_k = 30
+
+candidate_rows = []
+
+all_dest_ids = np.arange(
+    len(destination_map)
+)
+
+reverse_destination_map = {
+    v: k
+    for k, v in destination_map.items()
+}
+
+# for every origin
+for origin, origin_id in origin_map.items():
+
+    # predict scores
+    scores = lightfm_model.predict(
+        origin_id,
+        all_dest_ids
+    )
+
+    # top destinations
+    top_dest_idx = np.argsort(-scores)[:top_k]
+
+    for dest_id in top_dest_idx:
+
+        candidate_rows.append({
+            "origin": origin,
+            "destination": reverse_destination_map[dest_id],
+            "rec_score": scores[dest_id]
+        })
+
+candidate_df = pd.DataFrame(candidate_rows)
+
+# ============================================================
+# 6. BUILD CATBOOST FEATURES
+# ============================================================
+
+# create lag features
+
+monthly = monthly.sort_values(
+    ["lane", "month"]
+)
+
+monthly["lag_1"] = (
+    monthly.groupby("lane")["volume"]
+    .shift(1)
+)
+
+monthly["lag_2"] = (
+    monthly.groupby("lane")["volume"]
+    .shift(2)
+)
+
+monthly["rolling_mean_3"] = (
+    monthly.groupby("lane")["volume"]
+    .transform(
+        lambda x:
+        x.shift(1).rolling(3).mean()
+    )
+)
+
+monthly["months_active_6"] = (
+    monthly.groupby("lane")["active"]
+    .transform(
+        lambda x:
+        x.shift(1).rolling(6).sum()
+    )
+)
+
+# target:
+# active next month
+
+monthly["target"] = (
+    monthly.groupby("lane")["active"]
+    .shift(-1)
+)
+
+# ============================================================
+# 7. TRAIN / TEST SPLIT
+# ============================================================
+
+months = sorted(
+    monthly["month"].unique()
+)
+
+train_months = months[:-1]
+
+test_month = months[-1]
+
+train_df = monthly[
+    monthly["month"].isin(train_months)
+].copy()
+
+test_df = monthly[
+    monthly["month"] == test_month
+].copy()
+
+# ============================================================
+# 8. MERGE RECOMMENDATION SCORES
+# ============================================================
+
+train_df = train_df.merge(
+    candidate_df,
+    on=["origin", "destination"],
+    how="left"
+)
+
+test_df = test_df.merge(
+    candidate_df,
+    on=["origin", "destination"],
+    how="left"
+)
+
+train_df["rec_score"] = (
+    train_df["rec_score"]
+    .fillna(0)
+)
+
+test_df["rec_score"] = (
+    test_df["rec_score"]
+    .fillna(0)
+)
+
+# ============================================================
+# 9. FEATURES
+# ============================================================
+
+feature_cols = [
+    "lag_1",
+    "lag_2",
+    "rolling_mean_3",
+    "months_active_6",
+    "rec_score"
+]
+
+cat_cols = [
+    "origin",
+    "destination",
+    "cargo_type",
+    "speed"
+]
+
+# fill na
+train_df[feature_cols] = (
+    train_df[feature_cols]
+    .fillna(0)
+)
+
+test_df[feature_cols] = (
+    test_df[feature_cols]
+    .fillna(0)
+)
+
+# ============================================================
+# 10. TRAIN CATBOOST
+# ============================================================
+
+model = CatBoostClassifier(
+    iterations=500,
+    depth=6,
+    learning_rate=0.05,
+    loss_function="Logloss",
+    verbose=100
+)
+
+model.fit(
+    train_df[
+        feature_cols + cat_cols
+    ],
+    train_df["target"],
+    cat_features=cat_cols
+)
+
+# ============================================================
+# 11. PREDICT NEXT MONTH
+# ============================================================
+
+test_df["probability"] = (
+    model.predict_proba(
+        test_df[
+            feature_cols + cat_cols
+        ]
+    )[:, 1]
+)
+
+# ============================================================
+# 12. TOP-K RANKING PER ORIGIN
+# ============================================================
+
+test_df = test_df.sort_values(
+    ["origin", "probability"],
+    ascending=[True, False]
+)
+
+test_df["rank"] = (
+    test_df.groupby("origin")
+    .cumcount() + 1
+)
+
+# keep top lanes
+final_prediction = test_df[
+    test_df["rank"] <= 10
+].copy()
+
+# ============================================================
+# 13. FINAL RESULT
+# ============================================================
+
+result = final_prediction[
+    [
+        "origin",
+        "destination",
+        "cargo_type",
+        "speed",
+        "probability",
+        "rec_score",
+        "rank"
+    ]
+]
+
+print(result.head(50))
