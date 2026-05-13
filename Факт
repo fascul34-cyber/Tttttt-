@@ -1,0 +1,16 @@
+def preprocess_facts(df_raw: pd.DataFrame) -> pd.DataFrame:
+    out = df_raw.rename(columns=_FACTS_RENAME).copy()
+
+    # FIX
+    out = out.loc[:, ~out.columns.duplicated()]
+
+    required = {"origin", "destination", "cargo_type", "speed", "date", "volume"}
+
+    missing = required - set(out.columns)
+    if missing:
+        raise ValueError(
+            f"В df нет колонок: {sorted(missing)}. "
+            "Добавь алиасы в _FACTS_RENAME или переименуй заранее."
+        )
+
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
