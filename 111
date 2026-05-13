@@ -1,0 +1,3 @@
+dup_cols = out.columns[out.columns.duplicated()]
+if len(dup_cols):
+    raise ValueError(f"Duplicate columns after rename: {dup_cols.tolist()}")
