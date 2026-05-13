@@ -1,0 +1,7 @@
+def preprocess_plans(plan_raw: pd.DataFrame) -> pd.DataFrame:
+    plan = plan_raw.rename(columns=_PLANS_RENAME).copy()
+
+    # FIX
+    plan = plan.loc[:, ~plan.columns.duplicated()]
+
+    required = {"origin", "plan_volume", "date"}
