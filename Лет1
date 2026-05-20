@@ -1,0 +1,100 @@
+let
+    // Исходная таблица
+    Source = YourTable,
+
+    // Типы данных
+    #"Changed Type" =
+        Table.TransformColumnTypes(
+            Source,
+            {
+                {"НПЗ", type text},
+                {"Модель установки", type text},
+                {"Дата остановки", type date},
+                {"Дата запуска", type date}
+            }
+        ),
+
+    // Убираем null
+    Cleaned =
+        Table.SelectRows(
+            #"Changed Type",
+            each
+                [НПЗ] <> null and
+                [Модель установки] <> null and
+                [Дата остановки] <> null and
+                [Дата запуска] <> null
+        ),
+
+    // Минимальная и максимальная даты
+    MinDate = List.Min(Cleaned[Дата остановки]),
+    MaxDate = List.Max(Cleaned[Дата запуска]),
+
+    // Список всех дат
+    DateList =
+        List.Dates(
+            MinDate,
+            Duration.Days(MaxDate - MinDate) + 1,
+            #duration(1,0,0,0)
+        ),
+
+    // Таблица дат
+    DatesTable =
+        Table.FromList(
+            DateList,
+            Splitter.SplitByNothing(),
+            {"Дата"}
+        ),
+
+    // Уникальные связки НПЗ + Модель установки
+    StationsUnits =
+        Table.Distinct(
+            Table.SelectColumns(
+                Cleaned,
+                {"НПЗ", "Модель установки"}
+            )
+        ),
+
+    // Кросс join
+    AddDates =
+        Table.AddColumn(
+            StationsUnits,
+            "Dates",
+            each DatesTable
+        ),
+
+    ExpandDates =
+        Table.ExpandTableColumn(
+            AddDates,
+            "Dates",
+            {"Дата"}
+        ),
+
+    // Флаг остановки
+    AddFlag =
+        Table.AddColumn(
+            ExpandDates,
+            "1/0",
+            each
+                let
+                    curNPZ = [НПЗ],
+                    curUnit = [Модель установки],
+                    curDate = [Дата],
+
+                    Filtered =
+                        Table.SelectRows(
+                            Cleaned,
+                            (r) =>
+                                r[НПЗ] = curNPZ and
+                                r[Модель установки] = curUnit and
+                                curDate >= r[Дата остановки] and
+                                curDate <= r[Дата запуска]
+                        )
+                in
+                    if Table.RowCount(Filtered) > 0
+                    then 1
+                    else 0,
+            Int64.Type
+        )
+
+in
+    AddFlag
