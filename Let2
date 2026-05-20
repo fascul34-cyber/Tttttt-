@@ -1,0 +1,70 @@
+let
+    // Исходная таблица
+    Source = YourTable,
+
+    // Типы
+    #"Changed Type" =
+        Table.TransformColumnTypes(
+            Source,
+            {
+                {"НПЗ", type text},
+                {"Модель установки", type text},
+                {"Дата остановки", type date},
+                {"Дата запуска", type date}
+            }
+        ),
+
+    // Убираем null
+    Cleaned =
+        Table.SelectRows(
+            #"Changed Type",
+            each
+                [НПЗ] <> null and
+                [Модель установки] <> null and
+                [Дата остановки] <> null and
+                [Дата запуска] <> null
+        ),
+
+    // Создаём список дат только внутри остановки
+    AddDateList =
+        Table.AddColumn(
+            Cleaned,
+            "Дата",
+            each
+                List.Dates(
+                    [Дата остановки],
+                    Duration.Days([Дата запуска] - [Дата остановки]) + 1,
+                    #duration(1,0,0,0)
+                )
+        ),
+
+    // Разворачиваем даты
+    ExpandDates =
+        Table.ExpandListColumn(
+            AddDateList,
+            "Дата"
+        ),
+
+    // Добавляем флаг
+    AddFlag =
+        Table.AddColumn(
+            ExpandDates,
+            "1/0",
+            each 1,
+            Int64.Type
+        ),
+
+    // Оставляем нужные колонки
+    Result =
+        Table.SelectColumns(
+            AddFlag,
+            {
+                "НПЗ",
+                "Модель установки",
+                "Дата",
+                "1/0"
+            }
+        )
+
+in
+    Result
