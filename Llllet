@@ -1,0 +1,97 @@
+let
+    Source = YourTable,
+
+    // Типы
+    #"Changed Type" = Table.TransformColumnTypes(
+        Source,
+        {
+            {"station", type text},
+            {"reason", type text},
+            {"stop_date", type date},
+            {"start_date", type date}
+        }
+    ),
+
+    // Мин и макс даты
+    MinDate = List.Min(#"Changed Type"[stop_date]),
+    MaxDate = List.Max(#"Changed Type"[start_date]),
+
+    // Список всех дат
+    DateList = List.Dates(
+        MinDate,
+        Duration.Days(MaxDate - MinDate) + 1,
+        #duration(1,0,0,0)
+    ),
+
+    DatesTable = Table.FromList(
+        DateList,
+        Splitter.SplitByNothing(),
+        {"date"}
+    ),
+
+    // Список станций
+    Stations = Table.Distinct(
+        Table.SelectColumns(#"Changed Type", {"station"})
+    ),
+
+    // Все комбинации station × date
+    AddDates = Table.AddColumn(
+        Stations,
+        "Dates",
+        each DatesTable
+    ),
+
+    ExpandDates = Table.ExpandTableColumn(
+        AddDates,
+        "Dates",
+        {"date"}
+    ),
+
+    // Добавляем месяц
+    AddMonth = Table.AddColumn(
+        ExpandDates,
+        "month",
+        each Date.StartOfMonth([date]),
+        type date
+    ),
+
+    // Проверка остановки
+    AddFlag = Table.AddColumn(
+        AddMonth,
+        "is_stop",
+        (current) =>
+            let
+                Filtered =
+                    Table.SelectRows(
+                        #"Changed Type",
+                        each
+                            [station] = current[station]
+                            and current[date] >= [stop_date]
+                            and current[date] <= [start_date]
+                    )
+            in
+                if Table.RowCount(Filtered) > 0 then 1 else 0,
+        Int64.Type
+    ),
+
+    // Флаг аварии по station + month
+    AddAccidentFlag = Table.AddColumn(
+        AddFlag,
+        "has_accident",
+        each
+            if List.Contains(
+                Table.SelectRows(
+                    #"Changed Type",
+                    (x) =>
+                        x[station] = [station]
+                        and Date.StartOfMonth(x[stop_date]) = [month]
+                )[reason],
+                "Авария"
+            )
+            then 1
+            else 0,
+        Int64.Type
+    )
+
+in
+    AddAccidentFlag
