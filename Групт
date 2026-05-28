@@ -1,0 +1,44 @@
+let
+    Source = Ремонты,
+
+    #"Changed Type" =
+        Table.TransformColumnTypes(
+            Source,
+            {
+                {"НПЗ", type text},
+                {"Причина остановки", type text},
+                {"Дата", type date}
+            }
+        ),
+
+    // Месяц
+    AddMonth =
+        Table.AddColumn(
+            #"Changed Type",
+            "Месяц",
+            each Date.StartOfMonth([Дата]),
+            type date
+        ),
+
+    // Группировка
+    Grouped =
+        Table.Group(
+            AddMonth,
+            {"НПЗ", "Месяц"},
+            {
+                {
+                    "Есть авария",
+                    each
+                        if List.Contains(
+                            [Причина остановки],
+                            "Авария"
+                        )
+                        then 1
+                        else 0,
+                    Int64.Type
+                }
+            }
+        )
+
+in
+    Grouped
