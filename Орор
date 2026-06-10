@@ -1,0 +1,131 @@
+import pandas as pd
+import numpy as np
+from catboost import CatBoostRegressor
+import shap
+
+# =====================================
+# 1. Целевая переменная
+# =====================================
+
+TARGET = "tariff_rub"
+
+# =====================================
+# 2. Список признаков
+# =====================================
+
+FEATURES = [
+    "volume",          # объем
+    "distance",        # среднее расстояние
+    "rate_tkm",        # ставка т-км
+    "origin",          # станция отправления
+    "destination",     # станция назначения
+    "cargo_group",     # группа груза
+    "month"            # месяц
+]
+
+# Оставляем только нужные колонки
+data = df[[TARGET] + FEATURES].copy()
+
+# =====================================
+# 3. Очистка данных
+# =====================================
+
+# удаляем строки без таргета
+data = data.dropna(subset=[TARGET])
+
+# определяем категориальные признаки
+cat_features = (
+    data[FEATURES]
+    .select_dtypes(include=["object", "category"])
+    .columns
+    .tolist()
+)
+
+# переводим категории в строки
+for col in cat_features:
+    data[col] = data[col].fillna("UNKNOWN").astype(str)
+
+# числовые признаки
+num_features = [
+    col for col in FEATURES
+    if col not in cat_features
+]
+
+# заполняем пропуски медианой
+for col in num_features:
+    data[col] = pd.to_numeric(
+        data[col],
+        errors="coerce"
+    )
+
+    data[col] = data[col].fillna(
+        data[col].median()
+    )
+
+# =====================================
+# 4. Формируем X и y
+# =====================================
+
+X = data[FEATURES]
+y = data[TARGET]
+
+# =====================================
+# 5. Обучаем модель
+# =====================================
+
+model = CatBoostRegressor(
+    iterations=1000,
+    depth=6,
+    learning_rate=0.03,
+    loss_function="RMSE",
+    verbose=False,
+    random_seed=42
+)
+
+model.fit(
+    X,
+    y,
+    cat_features=cat_features
+)
+
+# =====================================
+# 6. SHAP-анализ
+# =====================================
+
+explainer = shap.TreeExplainer(model)
+
+shap_values = explainer.shap_values(X)
+
+# среднее абсолютное влияние
+importance = pd.DataFrame({
+    "factor": FEATURES,
+    "importance": np.abs(shap_values).mean(axis=0)
+})
+
+importance["share_%"] = (
+    importance["importance"]
+    / importance["importance"].sum()
+    * 100
+)
+
+importance = importance.sort_values(
+    "share_%",
+    ascending=False
+)
+
+print("\nВлияние факторов на тариф:\n")
+print(
+    importance[
+        ["factor", "share_%"]
+    ].round(2)
+)
+
+# =====================================
+# 7. График SHAP
+# =====================================
+
+shap.summary_plot(
+    shap_values,
+    X,
+    max_display=20
+)
