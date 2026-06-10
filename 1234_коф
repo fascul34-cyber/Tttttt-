@@ -1,0 +1,186 @@
+import pandas as pd
+import numpy as np
+import shap
+
+# =====================================================
+# ПОДГОТОВКА ДАННЫХ
+# =====================================================
+
+df_work = df.copy()
+
+distance_col = 'расстояние'
+wagon_col = 'кол_вагонов'
+
+# =====================================================
+# ФУНКЦИЯ: безопасный SHAP extract
+# =====================================================
+
+def get_shap_values(shap_values, class_idx=1):
+    """
+    Унифицирует SHAP output:
+    - regression -> array
+    - binary classification -> list
+    - multiclass -> list
+    """
+    if isinstance(shap_values, list):
+        return shap_values[class_idx]
+    return shap_values
+
+
+# =====================================================
+# ПРЕОБРАЗОВАНИЕ РАССТОЯНИЯ
+# =====================================================
+
+df_work[distance_col] = (
+    df_work[distance_col]
+    .astype(str)
+    .str.replace(',', '.', regex=False)
+    .str.extract(r'([\d\.]+)')[0]
+)
+
+df_work[distance_col] = pd.to_numeric(df_work[distance_col], errors='coerce')
+
+# лог-трансформация (более интерпретируемо, чем винзоризация)
+df_work[distance_col] = np.log1p(df_work[distance_col])
+
+# =====================================================
+# ГРУППИРОВКА РАССТОЯНИЯ
+# =====================================================
+
+distance_bins = [0, 4.6, 5.3, 6.2, 7.0, np.inf]
+distance_labels = ['0-100', '100-200', '200-500', '500-1000', '1000+']
+
+df_work['distance_group'] = pd.cut(
+    np.expm1(df_work[distance_col]),
+    bins=[0, 100, 200, 500, 1000, np.inf],
+    labels=distance_labels,
+    include_lowest=True
+)
+
+# =====================================================
+# ПОДГОТОВКА X ДЛЯ SHAP
+# =====================================================
+
+X_shap = X.loc[df_work.index]
+
+assert len(X_shap) == len(df_work), "X и df_work не синхронизированы"
+
+# =====================================================
+# SHAP
+# =====================================================
+
+explainer = shap.TreeExplainer(model)
+raw_shap = explainer.shap_values(X_shap)
+
+shap_values = get_shap_values(raw_shap)
+
+shap_df = pd.DataFrame(
+    shap_values,
+    columns=X_shap.columns,
+    index=X_shap.index
+)
+
+# =====================================================
+# ГЛОБАЛЬНАЯ ВАЖНОСТЬ (КОРРЕКТНАЯ ИНТЕРПРЕТАЦИЯ)
+# =====================================================
+
+importance = pd.DataFrame({
+    'feature': X_shap.columns,
+    'mean_abs_shap': np.abs(shap_values).mean(axis=0),
+    'mean_shap': shap_values.mean(axis=0),
+    'std_shap': shap_values.std(axis=0)
+})
+
+importance['share_%'] = (
+    importance['mean_abs_shap'] /
+    importance['mean_abs_shap'].sum() * 100
+)
+
+importance = importance.sort_values('mean_abs_shap', ascending=False)
+
+importance['direction'] = np.where(
+    importance['mean_shap'] >= 0,
+    'в среднем повышает прогноз',
+    'в среднем снижает прогноз'
+)
+
+print("\nТОП ФАКТОРОВ ВЛИЯНИЯ (SHAP)")
+print(importance.head(30)[
+    ['feature', 'mean_abs_shap', 'share_%', 'mean_shap', 'std_shap', 'direction']
+])
+
+# =====================================================
+# ВЛИЯНИЕ РАССТОЯНИЯ ПО ГРУППАМ
+# =====================================================
+
+distance_effect = (
+    pd.DataFrame({
+        'distance_group': df_work['distance_group'],
+        'shap': shap_df[distance_col]
+    })
+    .groupby('distance_group', observed=True)
+    .agg(
+        mean_shap=('shap', 'mean'),
+        mean_abs_shap=('shap', lambda x: np.abs(x).mean()),
+        count=('shap', 'size')
+    )
+    .reset_index()
+)
+
+distance_effect['mean_shap_per_obs'] = (
+    distance_effect['mean_shap'] / distance_effect['count']
+)
+
+print("\nВЛИЯНИЕ РАССТОЯНИЯ ПО ГРУППАМ")
+print(distance_effect)
+
+# =====================================================
+# ВЛИЯНИЕ ВАГОНОВ (БЕЗ ПОТЕРИ СМЫСЛА)
+# =====================================================
+
+wagon_effect = (
+    pd.DataFrame({
+        'wagon': df_work[wagon_col],
+        'shap': shap_df[wagon_col]
+    })
+    .groupby('wagon')
+    .agg(
+        mean_shap=('shap', 'mean'),
+        mean_abs_shap=('shap', lambda x: np.abs(x).mean()),
+        count=('shap', 'size')
+    )
+    .sort_values('mean_abs_shap', ascending=False)
+)
+
+print("\nВЛИЯНИЕ ВАГОНОВ")
+print(wagon_effect.head(30))
+
+# =====================================================
+# SHAP SUMMARY
+# =====================================================
+
+shap.summary_plot(shap_values, X_shap, max_display=30)
+
+shap.summary_plot(
+    shap_values,
+    X_shap,
+    plot_type='bar',
+    max_display=30
+)
+
+# =====================================================
+# DEPENDENCE PLOTS (ТОП-5)
+# =====================================================
+
+top_features = importance['feature'].head(5).tolist()
+
+for feature in top_features:
+    try:
+        shap.dependence_plot(
+            feature,
+            shap_values,
+            X_shap,
+            interaction_index="auto"
+        )
+    except Exception as e:
+        print(f"Ошибка в dependence_plot для {feature}: {e}")
