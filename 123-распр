@@ -1,0 +1,48 @@
+import pandas as pd
+from catboost import CatBoostRegressor
+import shap
+
+# Целевая переменная
+y = df["tariff_rub"]
+
+# Факторы
+X = df[
+    [
+        "volume",
+        "distance",
+        "rate_tkm"
+    ]
+]
+
+model = CatBoostRegressor(
+    iterations=500,
+    depth=6,
+    learning_rate=0.05,
+    verbose=False
+)
+
+model.fit(X, y)
+
+explainer = shap.TreeExplainer(model)
+
+shap_values = explainer.shap_values(X)
+
+importance = (
+    pd.DataFrame({
+        "factor": X.columns,
+        "importance": abs(shap_values).mean(axis=0)
+    })
+)
+
+importance["share_%"] = (
+    importance["importance"]
+    / importance["importance"].sum()
+    * 100
+)
+
+importance = importance.sort_values(
+    "share_%",
+    ascending=False
+)
+
+print(importance)
