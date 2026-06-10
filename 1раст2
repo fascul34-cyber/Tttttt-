@@ -1,0 +1,12 @@
+import numpy as np
+
+for i, col in enumerate(X.columns):
+
+    if pd.api.types.is_numeric_dtype(X[col]):
+
+        corr = np.corrcoef(
+            X[col],
+            shap_values[:, i]
+        )[0, 1]
+
+        print(col, round(corr, 3))
