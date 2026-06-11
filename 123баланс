@@ -1,0 +1,100 @@
+import pandas as pd
+import numpy as np
+import cvxpy as cp
+
+# -----------------------
+# 1. DATA PREP
+# -----------------------
+
+def prepare(df):
+    products = [
+        "автобензин",
+        "дизель",
+        "керосин",
+        "мазут",
+        "нафта",
+        "вго",
+        "битумы",
+        "кокс",
+        "первичная переработка"
+    ]
+
+    df = df[df["product_group"].isin(products)].copy()
+
+    dates = sorted(df["date"].unique())
+
+    p_index = {p: i for i, p in enumerate(products)}
+    t_index = {t: i for i, t in enumerate(dates)}
+
+    X = np.zeros((len(dates), len(products)))
+
+    for _, r in df.iterrows():
+        if r["product_group"] in p_index:
+            X[t_index[r["date"]], p_index[r["product_group"]]] += r["value"]
+
+    return X, products, dates
+
+
+# -----------------------
+# 2. MODEL (production only)
+# -----------------------
+
+def solve_production(X, products):
+    T, P = X.shape
+
+    # latent true production
+    Prod = cp.Variable((T, P), nonneg=True)
+
+    constraints = []
+
+    # -----------------------
+    # OPTIONAL: physical bounds
+    # -----------------------
+
+    # запрет отрицательных значений уже есть (nonneg=True)
+
+    # можно ограничить выбросы:
+    constraints.append(Prod <= 2.0 * np.maximum(X, 1e-6))
+
+    # -----------------------
+    # OBJECTIVE
+    # -----------------------
+
+    # 1) близость к данным
+    data_fit = cp.norm(Prod - X, "fro")
+
+    # 2) сглаживание во времени (важно для нефти)
+    smoothness = 0
+    for t in range(1, T):
+        smoothness += cp.norm(Prod[t] - Prod[t - 1], 2)
+
+    # 3) L1 регуляризация (убирает шум)
+    sparsity = cp.norm(Prod, 1)
+
+    objective = cp.Minimize(
+        data_fit +
+        0.1 * smoothness +
+        0.01 * sparsity
+    )
+
+    prob = cp.Problem(objective, constraints)
+    prob.solve(solver=cp.ECOS)
+
+    return Prod.value
+
+
+# -----------------------
+# 3. RUN PIPELINE
+# -----------------------
+
+def run(df):
+    X, products, dates = prepare(df)
+    Prod = solve_production(X, products)
+
+    result = pd.DataFrame(
+        Prod,
+        index=dates,
+        columns=products
+    )
+
+    return result
