@@ -1,0 +1,39 @@
+import pandas as pd
+import numpy as np
+
+# -----------------------
+# df должен быть:
+# date | product_group | value
+# -----------------------
+
+def prepare(df):
+    # уникальные значения
+    products = sorted(df['product_group'].unique())
+    dates = sorted(df['date'].unique())
+
+    # словари индексов
+    p_index = {p: i for i, p in enumerate(products)}
+    t_index = {t: i for i, t in enumerate(dates)}
+
+    # матрица наблюдений
+    X = np.zeros((len(dates), len(products)))
+
+    for _, r in df.iterrows():
+        t = t_index[r['date']]
+        p = p_index[r['product_group']]
+        X[t, p] += r['value']
+
+    return X, products, dates
+
+
+# -----------------------
+# ИСПОЛЬЗОВАНИЕ
+# -----------------------
+
+df = pd.read_csv("data.csv")
+
+X, products, dates = prepare(df)
+
+print("X shape:", X.shape)
+print("products:", products)
+print("dates:", dates)
