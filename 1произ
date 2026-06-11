@@ -1,0 +1,65 @@
+import pandas as pd
+import numpy as np
+import cvxpy as cp
+
+# -----------------------
+# 1. DATA PREP
+# -----------------------
+
+def prepare(df):
+    products = sorted(df['product_group'].unique())
+    dates = sorted(df['date'].unique())
+
+    p_index = {p:i for i,p in enumerate(products)}
+    t_index = {t:i for i,t in enumerate(dates)}
+
+    X = np.zeros((len(dates), len(products)))
+
+    for _, r in df.iterrows():
+        X[t_index[r['date']], p_index[r['product_group']]] += r['value']
+
+    return X, products, dates
+
+
+# -----------------------
+# 2. MODEL
+# -----------------------
+
+def solve_balance(X, products):
+    T, P = X.shape
+
+    # production
+    Prod = cp.Variable((T, P), nonneg=True)
+
+    # flows between products
+    F = cp.Variable((P, P), nonneg=True)
+
+    constraints = []
+
+    # запрещаем диагональ (не перерабатываем в себя)
+    for i in range(P):
+        constraints.append(F[i, i] == 0)
+
+    # можно добавить физические запреты вручную:
+    # example:
+    # F[bitumen, gasoline] == 0
+
+    for t in range(T):
+        for p in range(P):
+
+            inflow = cp.sum(F[:, p])
+            outflow = cp.sum(F[p, :])
+
+            constraints.append(
+                Prod[t, p] + inflow - outflow == X[t, p]
+            )
+
+    # регуляризация (чтобы модель не “раздувала” потоки)
+    objective = cp.Minimize(
+        cp.norm(Prod - X, "fro") + 0.01 * cp.norm(F, 1)
+    )
+
+    prob = cp.Problem(objective, constraints)
+    prob.solve(solver=cp.ECOS)
+
+    return Prod.value, F.value
