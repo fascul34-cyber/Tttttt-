@@ -1,0 +1,153 @@
+import pandas as pd
+
+
+
+repairs["month"] = pd.to_datetime(
+
+    repairs["month"]
+
+)
+
+
+
+# все месяцы
+
+
+
+all_months = pd.date_range(
+
+    repairs["month"].min(),
+
+    repairs["month"].max(),
+
+    freq="MS"
+
+)
+
+
+
+# уникальные установки
+
+
+
+units = repairs[
+
+    [
+
+        "refinery",
+
+        "process",
+
+        "unit",
+
+        "capacity_tons",
+
+        "capacity_share"
+
+    ]
+
+].drop_duplicates()
+
+
+
+# полный календарь
+
+
+
+calendar = pd.MultiIndex.from_product(
+
+    [
+
+        all_months,
+
+        units.index
+
+    ],
+
+    names=[
+
+        "month",
+
+        "unit_idx"
+
+    ]
+
+).to_frame(index=False)
+
+
+
+calendar = calendar.merge(
+
+    units.reset_index(),
+
+    left_on="unit_idx",
+
+    right_on="index",
+
+    how="left"
+
+)
+
+
+
+calendar = calendar.drop(
+
+    columns=[
+
+        "unit_idx",
+
+        "index"
+
+    ]
+
+)
+
+
+
+# объединяем с ремонтами
+
+
+
+repairs_full = calendar.merge(
+
+    repairs,
+
+    on=[
+
+        "month",
+
+        "refinery",
+
+        "process",
+
+        "unit",
+
+        "capacity_tons",
+
+        "capacity_share"
+
+    ],
+
+    how="left"
+
+)
+
+repairs_full["downtime_days"] = (
+
+    repairs_full["downtime_days"]
+
+    .fillna(0)
+
+)
+
+
+
+repairs_full["lost_capacity"] = (
+
+    repairs_full["downtime_days"]
+
+    * repairs_full["capacity_tons"]
+
+    * repairs_full["capacity_share"]
+
+)
