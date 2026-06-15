@@ -1,0 +1,234 @@
+import pandas as pd
+import numpy as np
+
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from sklearn.model_selection import TimeSeriesSplit
+
+# ==========================================
+# 1. ЗАГРУЗКА
+# ==========================================
+
+repairs = pd.read_excel("repairs.xlsx")
+
+production = pd.read_excel("production.xlsx")
+
+# ==========================================
+# 2. ДАТЫ
+# ==========================================
+
+repairs["Stop date"] = pd.to_datetime(
+    repairs["Stop date"]
+)
+
+repairs["Restart date"] = pd.to_datetime(
+    repairs["Restart date"]
+)
+
+# ==========================================
+# 3. РАЗБИВАЕМ РЕМОНТЫ ПО МЕСЯЦАМ
+# ==========================================
+
+rows = []
+
+for _, row in repairs.iterrows():
+
+    start = row["Stop date"]
+    end = row["Restart date"]
+
+    process = row["Процесс"]
+    capacity = row["Мощность"]
+
+    current = start.replace(day=1)
+
+    while current <= end:
+
+        month_start = current
+        month_end = current + pd.offsets.MonthEnd(0)
+
+        overlap_start = max(start, month_start)
+        overlap_end = min(end, month_end)
+
+        days = (
+            overlap_end - overlap_start
+        ).days + 1
+
+        if days > 0:
+
+            lost_capacity_days = (
+                capacity * days
+            )
+
+            rows.append(
+                {
+                    "month":
+                    current.strftime("%Y-%m"),
+
+                    "Процесс":
+                    process,
+
+                    "lost_capacity_days":
+                    lost_capacity_days
+                }
+            )
+
+        current = (
+            current
+            + pd.offsets.MonthBegin(1)
+        )
+
+repairs_monthly = pd.DataFrame(rows)
+
+# ==========================================
+# 4. АГРЕГАЦИЯ ПО ПРОЦЕССАМ
+# ==========================================
+
+features = repairs_monthly.pivot_table(
+    index="month",
+    columns="Процесс",
+    values="lost_capacity_days",
+    aggfunc="sum",
+    fill_value=0
+)
+
+features = features.reset_index()
+
+# ==========================================
+# 5. ПОДГОТОВКА ПРОИЗВОДСТВА
+# ==========================================
+
+production["Период"] = pd.to_datetime(
+    production["Период"]
+)
+
+production["month"] = (
+    production["Период"]
+    .dt.strftime("%Y-%m")
+)
+
+product = "Бензин"
+
+prod = production[
+    production["Продукт"] == product
+]
+
+prod = prod[
+    ["month", "Тонны"]
+].rename(
+    columns={
+        "Тонны": "target"
+    }
+)
+
+# ==========================================
+# 6. ОБЪЕДИНЕНИЕ
+# ==========================================
+
+df = prod.merge(
+    features,
+    on="month",
+    how="left"
+)
+
+df = df.fillna(0)
+
+# ==========================================
+# 7. СЕЗОННОСТЬ
+# ==========================================
+
+date_series = pd.to_datetime(
+    df["month"]
+)
+
+df["month_num"] = date_series.dt.month
+
+df["quarter"] = date_series.dt.quarter
+
+# ==========================================
+# 8. ЛАГИ ПРОИЗВОДСТВА
+# ==========================================
+
+df["lag1"] = df["target"].shift(1)
+df["lag2"] = df["target"].shift(2)
+
+df = df.dropna()
+
+# ==========================================
+# 9. TRAIN TEST
+# ==========================================
+
+X = df.drop(
+    columns=[
+        "month",
+        "target"
+    ]
+)
+
+y = df["target"]
+
+split = int(
+    len(df) * 0.8
+)
+
+X_train = X.iloc[:split]
+X_test = X.iloc[split:]
+
+y_train = y.iloc[:split]
+y_test = y.iloc[split:]
+
+# ==========================================
+# 10. ЛИНЕЙНАЯ РЕГРЕССИЯ
+# ==========================================
+
+model = LinearRegression()
+
+model.fit(
+    X_train,
+    y_train
+)
+
+pred = model.predict(
+    X_test
+)
+
+print(
+    "R2:",
+    round(
+        r2_score(
+            y_test,
+            pred
+        ),
+        3
+    )
+)
+
+# ==========================================
+# 11. ВЛИЯНИЕ ПРОЦЕССОВ
+# ==========================================
+
+coef_table = pd.DataFrame(
+    {
+        "feature":
+        X.columns,
+
+        "coefficient":
+        model.coef_
+    }
+)
+
+coef_table = coef_table.sort_values(
+    "coefficient"
+)
+
+print(
+    coef_table
+)
+
+coef_table.to_excel(
+    "process_impact.xlsx",
+    index=False
+)
+
+print(
+    "Сохранено в process_impact.xlsx"
+)
