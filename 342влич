@@ -1,0 +1,313 @@
+import pandas as pd
+import numpy as np
+
+from catboost import CatBoostRegressor
+from sklearn.metrics import r2_score, mean_absolute_error
+
+import shap
+
+# =====================================================
+# НАСТРОЙКИ
+# =====================================================
+
+REPAIRS_FILE = "repairs.xlsx"
+PRODUCTION_FILE = "production.xlsx"
+
+# =====================================================
+# ЗАГРУЗКА ДАННЫХ
+# =====================================================
+
+repairs = pd.read_excel(REPAIRS_FILE)
+production = pd.read_excel(PRODUCTION_FILE)
+
+# =====================================================
+# ПРИВЕДЕНИЕ НАЗВАНИЙ КОЛОНОК
+# =====================================================
+#
+# repairs:
+# month
+# refinery
+# process
+# unit
+# downtime_days
+# capacity_tons
+# capacity_share
+#
+# production:
+# month
+# refinery
+# product
+# tons
+#
+# ПЕРЕИМЕНУЙТЕ ПОД СВОИ КОЛОНКИ
+# =====================================================
+
+repairs = repairs.rename(columns={
+    "Месяц": "month",
+    "Завод": "refinery",
+    "Процесс": "process",
+    "Установка": "unit",
+    "Нерабочие дни": "downtime_days",
+    "Мощность": "capacity_tons",
+    "Доля мощности": "capacity_share"
+})
+
+production = production.rename(columns={
+    "Дата": "month",
+    "Завод": "refinery",
+    "Продукт": "product",
+    "Кол-во тонн": "tons"
+})
+
+# =====================================================
+# ДАТЫ
+# =====================================================
+
+repairs["month"] = pd.to_datetime(repairs["month"])
+production["month"] = pd.to_datetime(production["month"])
+
+# =====================================================
+# ПОТЕРЯННАЯ МОЩНОСТЬ
+# =====================================================
+
+repairs["lost_capacity"] = (
+    repairs["downtime_days"]
+    * repairs["capacity_tons"]
+    * repairs["capacity_share"]
+)
+
+# =====================================================
+# ПРИЗНАКИ ПО ПРОЦЕССАМ
+# =====================================================
+
+features = repairs.pivot_table(
+    index=["month", "refinery"],
+    columns="process",
+    values="lost_capacity",
+    aggfunc="sum",
+    fill_value=0
+).reset_index()
+
+features.columns.name = None
+
+# =====================================================
+# СПИСОК ПРОДУКТОВ
+# =====================================================
+
+products = sorted(
+    production["product"].unique()
+)
+
+# =====================================================
+# ИТОГОВАЯ ТАБЛИЦА ВЛИЯНИЙ
+# =====================================================
+
+impact_matrix = None
+
+# =====================================================
+# ЦИКЛ ПО ПРОДУКТАМ
+# =====================================================
+
+for product_name in products:
+
+    print(f"\n{'='*60}")
+    print(product_name)
+    print(f"{'='*60}")
+
+    target = production[
+        production["product"] == product_name
+    ].copy()
+
+    target = target.rename(
+        columns={"tons": "target"}
+    )
+
+    target = target[
+        ["month", "refinery", "target"]
+    ]
+
+    df = target.merge(
+        features,
+        on=["month", "refinery"],
+        how="left"
+    )
+
+    df = df.fillna(0)
+
+    # =====================================
+    # СЕЗОННОСТЬ
+    # =====================================
+
+    df["month_num"] = df["month"].dt.month
+    df["quarter"] = df["month"].dt.quarter
+
+    # =====================================
+    # ЛАГИ
+    # =====================================
+
+    df = df.sort_values(
+        ["refinery", "month"]
+    )
+
+    df["lag1"] = (
+        df.groupby("refinery")["target"]
+        .shift(1)
+    )
+
+    df["lag2"] = (
+        df.groupby("refinery")["target"]
+        .shift(2)
+    )
+
+    df = df.dropna()
+
+    # =====================================
+    # TRAIN TEST
+    # =====================================
+
+    df = df.sort_values("month")
+
+    X = df.drop(
+        columns=[
+            "target",
+            "month"
+        ]
+    )
+
+    y = df["target"]
+
+    split = int(len(df) * 0.8)
+
+    X_train = X.iloc[:split]
+    X_test = X.iloc[split:]
+
+    y_train = y.iloc[:split]
+    y_test = y.iloc[split:]
+
+    cat_features = [
+        X.columns.get_loc("refinery")
+    ]
+
+    # =====================================
+    # CATBOOST
+    # =====================================
+
+    model = CatBoostRegressor(
+        iterations=500,
+        depth=6,
+        learning_rate=0.05,
+        loss_function="RMSE",
+        verbose=False
+    )
+
+    model.fit(
+        X_train,
+        y_train,
+        cat_features=cat_features
+    )
+
+    pred = model.predict(X_test)
+
+    r2 = r2_score(
+        y_test,
+        pred
+    )
+
+    mae = mean_absolute_error(
+        y_test,
+        pred
+    )
+
+    print(
+        f"R2 = {r2:.3f}"
+    )
+
+    print(
+        f"MAE = {mae:,.0f}"
+    )
+
+    # =====================================
+    # SHAP
+    # =====================================
+
+    explainer = shap.TreeExplainer(model)
+
+    sample = X_test.copy()
+
+    shap_values = explainer.shap_values(
+        sample
+    )
+
+    shap_importance = pd.DataFrame({
+        "feature": sample.columns,
+        "importance":
+            np.abs(shap_values).mean(axis=0)
+    })
+
+    # убираем служебные признаки
+
+    shap_importance = shap_importance[
+        ~shap_importance["feature"].isin([
+            "refinery",
+            "month_num",
+            "quarter",
+            "lag1",
+            "lag2"
+        ])
+    ]
+
+    shap_importance = (
+        shap_importance
+        .sort_values(
+            "importance",
+            ascending=False
+        )
+    )
+
+    # =====================================
+    # СОБИРАЕМ МАТРИЦУ
+    # =====================================
+
+    product_impact = (
+        shap_importance
+        [["feature", "importance"]]
+        .rename(
+            columns={
+                "importance":
+                product_name
+            }
+        )
+    )
+
+    if impact_matrix is None:
+        impact_matrix = product_impact
+    else:
+        impact_matrix = impact_matrix.merge(
+            product_impact,
+            on="feature",
+            how="outer"
+        )
+
+# =====================================================
+# СОХРАНЕНИЕ
+# =====================================================
+
+impact_matrix = impact_matrix.fillna(0)
+
+impact_matrix = impact_matrix.sort_values(
+    impact_matrix.columns[1],
+    ascending=False
+)
+
+impact_matrix.to_excel(
+    "process_product_impact.xlsx",
+    index=False
+)
+
+print("\nФайл сохранен:")
+print("process_product_impact.xlsx")
+
+print("\nТОП процессов:")
+print(
+    impact_matrix.head(20)
+)
