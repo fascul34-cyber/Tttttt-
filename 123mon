@@ -1,0 +1,99 @@
+# все месяцы
+
+
+
+all_months = pd.date_range(
+
+    repairs["month"].min(),
+
+    repairs["month"].max(),
+
+    freq="MS"
+
+)
+
+
+
+# все НПЗ
+
+
+
+all_refineries = repairs["refinery"].unique()
+
+
+
+# все процессы
+
+
+
+all_processes = repairs["process"].unique()
+
+
+
+calendar = pd.MultiIndex.from_product(
+
+    [
+
+        all_months,
+
+        all_refineries,
+
+        all_processes
+
+    ],
+
+    names=[
+
+        "month",
+
+        "refinery",
+
+        "process"
+
+    ]
+
+).to_frame(index=False)
+
+
+
+repairs_full = calendar.merge(
+
+    repairs,
+
+    on=[
+
+        "month",
+
+        "refinery",
+
+        "process"
+
+    ],
+
+    how="left"
+
+)
+
+
+
+repairs_full["lost_capacity"] = (
+
+    repairs_full["lost_capacity"]
+
+    .fillna(0)
+
+)
+
+features = repairs_full.pivot_table(
+
+    index=["month", "refinery"],
+
+    columns="process",
+
+    values="lost_capacity",
+
+    aggfunc="sum",
+
+    fill_value=0
+
+).reset_index()
