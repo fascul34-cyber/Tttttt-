@@ -1,0 +1,22 @@
+all_dates = pd.date_range(
+    df['дата'].min(),
+    df['дата'].max(),
+    freq='D'
+)
+
+pairs = df[['завод', 'установка']].drop_duplicates()
+
+full_index = pd.MultiIndex.from_frame(
+    pairs.merge(
+        pd.DataFrame({'дата': all_dates}),
+        how='cross'
+    )
+)
+
+result = (
+    df.set_index(['завод', 'установка', 'дата'])
+      .reindex(full_index, fill_value=0)
+      .reset_index()
+)
+
+print(result)
