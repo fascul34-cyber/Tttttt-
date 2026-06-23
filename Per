@@ -1,0 +1,56 @@
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+
+# =========================
+# 1. ЗАГРУЗКА ДАННЫХ
+# =========================
+df_self = pd.read_excel("self_transport.xlsx")
+df_non = pd.read_excel("non_self_transport.xlsx")
+
+# =========================
+# 2. ЛОГАРИФМЫ (СОБСТВЕННЫЕ)
+# =========================
+df_self["ln_tariff"] = np.log(df_self["tariff"])
+df_self["ln_km"] = np.log(df_self["km"])
+df_self["ln_rate"] = np.log(df_self["rate_km"])
+df_self["ln_distance"] = np.log(df_self["distance"])
+df_self["ln_weight"] = np.log(df_self["weight_per_wagon"])
+df_self["ln_volume"] = np.log(df_self["volume"])
+
+X_self = df_self[
+    ["ln_km", "ln_rate", "ln_distance", "ln_weight", "ln_volume"]
+]
+
+y_self = df_self["ln_tariff"]
+
+X_self = sm.add_constant(X_self)
+
+model_self = sm.OLS(y_self, X_self).fit()
+
+print("\n===== СОБСТВЕННЫЕ ПЕРЕВОЗКИ =====")
+print(model_self.summary())
+
+# =========================
+# 3. ЛОГАРИФМЫ (НЕСОБСТВЕННЫЕ)
+# =========================
+df_non["ln_tariff"] = np.log(df_non["tariff"])
+df_non["ln_km"] = np.log(df_non["km"])
+df_non["ln_rate"] = np.log(df_non["rate_km"])
+df_non["ln_distance"] = np.log(df_non["distance"])
+df_non["ln_weight"] = np.log(df_non["weight_per_wagon"])
+df_non["ln_volume"] = np.log(df_non["volume"])
+
+# группность → dummy-переменные
+df_non = pd.get_dummies(df_non, columns=["group"], drop_first=True)
+
+X_non = df_non.drop(columns=["tariff", "ln_tariff", "period"])
+
+y_non = df_non["ln_tariff"]
+
+X_non = sm.add_constant(X_non)
+
+model_non = sm.OLS(y_non, X_non).fit()
+
+print("\n===== НЕСОБСТВЕННЫЕ ПЕРЕВОЗКИ =====")
+print(model_non.summary())
