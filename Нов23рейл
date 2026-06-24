@@ -1,0 +1,50 @@
+import pandas as pd
+import numpy as np
+import statsmodels.formula.api as smf
+
+# ==========================
+# Загрузка данных
+# ==========================
+df = pd.read_excel('non_self_daily.xlsx')
+
+# ==========================
+# Приведение типов
+# ==========================
+df['date'] = pd.to_datetime(df['date'])
+
+numeric_cols = [
+    'tariff',
+    'rate_km',
+    'distance',
+    'weight_per_wagon'
+]
+
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+# удаляем пропуски
+df = df.dropna()
+
+# ==========================
+# Логарифмы
+# ==========================
+df['ln_tariff'] = np.log(df['tariff'])
+df['ln_rate'] = np.log(df['rate_km'])
+df['ln_distance'] = np.log(df['distance'])
+df['ln_weight'] = np.log(df['weight_per_wagon'])
+
+# ==========================
+# Регрессия
+# ==========================
+model = smf.ols(
+    '''
+    ln_tariff ~
+    ln_rate +
+    ln_distance +
+    ln_weight +
+    C(group)
+    ''',
+    data=df
+).fit()
+
+print(model.summary())
