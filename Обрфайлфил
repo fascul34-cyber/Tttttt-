@@ -1,0 +1,38 @@
+import re
+import calendar
+from datetime import datetime
+
+months = {
+    'января': 1,
+    'февраля': 2,
+    'марта': 3,
+    'апреля': 4,
+    'мая': 5,
+    'июня': 6,
+    'июля': 7,
+    'августа': 8,
+    'сентября': 9,
+    'октября': 10,
+    'ноября': 11,
+    'декабря': 12,
+}
+
+text = "за 1-28 июня 2026 г."
+
+m = re.search(r'(\d+)-(\d+)\s+([а-я]+)\s+(\d{4})', text.lower())
+
+start_day = int(m.group(1))
+end_day = int(m.group(2))
+month = months[m.group(3)]
+year = int(m.group(4))
+
+period_start = datetime(year, month, start_day)
+period_end = datetime(year, month, end_day)
+
+last_day = calendar.monthrange(year, month)[1]
+
+is_month_end = end_day == last_day
+
+print(period_start)
+print(period_end)
+print(is_month_end)
