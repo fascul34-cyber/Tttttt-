@@ -1,0 +1,24 @@
+months_ru = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
+
+df["Период"] = (
+    df["PeriodStart"].dt.day.astype(str)
+    + "-"
+    + df["PeriodEnd"].dt.day.astype(str)
+    + " "
+    + df["PeriodEnd"].dt.month.map(months_ru)
+    + " "
+    + df["PeriodEnd"].dt.year.astype(str)
+)
