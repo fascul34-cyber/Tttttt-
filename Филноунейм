@@ -1,0 +1,51 @@
+from pathlib import Path
+import pandas as pd
+import re
+
+# Папка с файлами
+folder = Path(r"C:\Data")
+
+# Заводы, которые нужно оставить
+plants = [
+    "Завод 1",
+    "Завод 2",
+    "Завод 3",
+]
+
+all_data = []
+
+for file in folder.glob("P01*.xlsx"):
+
+    # Читаем первые строки для получения даты
+    head = pd.read_excel(file, header=None, nrows=4)
+
+    # В 4-й строке (индекс 3) ищем текст
+    date_text = " ".join(head.iloc[3].dropna().astype(str))
+
+    m = re.search(r"за\s+(.+?)\s*г", date_text, re.IGNORECASE)
+    period = m.group(1) if m else None
+
+    # Читаем таблицу начиная с 8 строки
+    df = pd.read_excel(file, skiprows=7)
+
+    # Переименовать колонки при необходимости
+    # Например первая колонка - завод, вторая - объем
+    df = df.iloc[:, :2]
+    df.columns = ["Plant", "Volume"]
+
+    # Оставляем нужные заводы
+    df = df[df["Plant"].isin(plants)]
+
+    # Добавляем информацию
+    df["Period"] = period
+    df["File"] = file.name
+
+    all_data.append(df)
+
+# Объединяем
+result = pd.concat(all_data, ignore_index=True)
+
+# Сохраняем
+result.to_excel("result.xlsx", index=False)
+
+print(result.head())
