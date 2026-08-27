@@ -1,0 +1,367 @@
+import pandas as pd
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+import plotly.express as px
+import plotly.graph_objects as go
+import json
+import urllib.request
+
+# ============================================================
+# 1. ДАННЫЕ И КООРДИНАТЫ
+# ============================================================
+
+df = pd.DataFrame(data)
+
+geolocator = Nominatim(user_agent="logistics_station_mapper_v3")
+geocode_with_delay = RateLimiter(
+    geolocator.geocode,
+    min_delay_seconds=1.5
+)
+
+def get_coordinates(station_name):
+    query = f"железнодорожная станция {station_name}, Россия"
+
+    try:
+        location = geocode_with_delay(query, language='ru')
+
+        if location:
+            return location.latitude, location.longitude
+
+        print(f"⚠ Не найдено: {station_name}")
+        return None, None
+
+    except Exception as e:
+        print(f"Ошибка при поиске {station_name}: {e}")
+        return None, None
+
+
+print("Ищем координаты станций...")
+
+coords = df['Станция отправления'].apply(get_coordinates)
+
+df['lat'] = coords.apply(lambda x: x[0])
+df['lon'] = coords.apply(lambda x: x[1])
+
+df_clean = df.dropna(subset=['lat', 'lon']).copy()
+
+
+# ============================================================
+# 2. ГРАНИЦА РОССИИ
+# ============================================================
+
+url = "https://raw.githubusercontent.com/johan/world.geo.json/master/countries/RUS.geo.json"
+
+try:
+    with urllib.request.urlopen(url) as response:
+        russia_geojson = json.loads(response.read().decode())
+except Exception as e:
+    print(f"⚠ Не удалось загрузить границы: {e}")
+    russia_geojson = None
+
+
+def extract_boundary_coords(geojson):
+    lons = []
+    lats = []
+
+    for feature in geojson['features']:
+        geom_type = feature['geometry']['type']
+        coords = feature['geometry']['coordinates']
+
+        if geom_type == 'Polygon':
+
+            for ring in coords:
+                for point in ring:
+                    lons.append(point[0])
+                    lats.append(point[1])
+
+                lons.append(None)
+                lats.append(None)
+
+        elif geom_type == 'MultiPolygon':
+
+            for polygon in coords:
+                for ring in polygon:
+
+                    for point in ring:
+                        lons.append(point[0])
+                        lats.append(point[1])
+
+                    lons.append(None)
+                    lats.append(None)
+
+    return lons, lats
+
+
+# ============================================================
+# 3. ЦВЕТА НПЗ
+# ============================================================
+
+company_colors = {
+    'Ангарская НХК': '#E6194B',
+    '"Антипинский НПЗ\n(Тюменский НПЗ)"': '#3CB44B',
+    'Астраханский ГПЗ': '#0082C8',
+    'Афипский НПЗ': '#F58231',
+    'Ачинский НПЗ': '#911EB4',
+    'Ильский НПЗ': '#46F0F0',
+    '"КИНЭФ\n(ООО \\"Киришинефтеоргсинтез\\")"': '#F032E6',
+    'Комсомольский НПЗ': '#D2F53C',
+    'Лукойл-ВНП': '#AA6E28',
+    'Лукойл-ННОС': '#FFFAC8',
+    'Лукойл-ПНОС': '#808000',
+    'Лукойл-УНП': '#000075',
+    'Марийский НПЗ': '#FABED4',
+    'Мини-НПЗ': '#FFD8B1',
+    'Московский НПЗ': '#47A3DA',
+    'НОВАТЭК-Усть-Луга': '#A9A9A9',
+    'Новошахтинский НПЗ': '#FB4934',
+    'Омский НПЗ': '#8E0152',
+    '"Орский НПЗ\n(ПАО \\"ОРСКНЕФТЕОРГСИНТЕЗ\\")"': '#CCEBC5',
+    'Рязанская НПК': '#F4A582',
+    'Салаватский НПЗ': '#66C2A5',
+
+    # Продолжайте ваш словарь здесь
+    'Самарская группа НПЗ': '#E78AC3',
+    'Саратовский НПЗ': '#004949',
+    'Славнефть-ЯНОС': '#FF0000',
+    'Сургутский ЗСК': '#FFFF00',
+    'ТАИФ-НК': '#0072B2',
+    'Танеко': '#56B4E9',
+    'Туапсинский НПЗ': '#B2DF8A',
+    'Уфимская группа НПЗ': '#006400',
+    'Хабаровский НПЗ': '#1B9E77',
+    'Яйский НПЗ': '#CC79A7'
+}
+
+
+# ============================================================
+# 4. ОСНОВНАЯ КАРТА С ТОЧКАМИ
+# ============================================================
+
+fig = px.scatter_map(
+    df_clean,
+    lat='lat',
+    lon='lon',
+    color='НПЗ',
+    size='Средняя мощность переработки в месяц, т',
+    size_max=30,
+    color_discrete_map=company_colors,
+    zoom=3,
+    center={'lat': 60.0, 'lon': 90.0},
+    title="Карта НПЗ"
+)
+
+
+# ============================================================
+# 5. ГРАНИЦА РФ
+# ============================================================
+
+if russia_geojson:
+
+    lons, lats = extract_boundary_coords(russia_geojson)
+
+    fig.add_trace(
+        go.Scattermap(
+            lon=lons,
+            lat=lats,
+            mode='lines',
+            line=dict(
+                width=1.5,
+                color='darkblue'
+            ),
+            hoverinfo='skip',
+            showlegend=False,
+            name='Граница РФ'
+        )
+    )
+
+
+# ============================================================
+# 6. НАСТРОЙКА ТОЧЕК
+# ============================================================
+
+fig.update_traces(
+    selector=dict(type='scattermap'),
+    marker=dict(
+        symbol='circle',
+        sizemode='area'
+    )
+)
+
+
+# ============================================================
+# 7. СОЗДАЁМ ПОЗИЦИИ ДЛЯ ПЛАШЕК
+# ============================================================
+
+# Чем больше значение — тем выше плашка относительно точки.
+LABEL_HEIGHT = 1.2
+
+# Минимальное расстояние между соседними плашками
+MIN_LON_DISTANCE = 1.5
+
+
+def calculate_label_positions(df):
+    """
+    Раздвигает плашки по горизонтали,
+    чтобы они меньше перекрывались.
+    """
+
+    points = []
+
+    for _, row in df.iterrows():
+
+        points.append({
+            'lat': row['lat'],
+            'lon': row['lon'],
+            'station': row['Станция отправления'],
+            'company': row['НПЗ'],
+            'volume': row['Средняя мощность переработки в месяц, т']
+        })
+
+    # Сначала сортируем по широте.
+    # Верхние плашки обрабатываем отдельно.
+    points.sort(key=lambda x: x['lat'], reverse=True)
+
+    placed = []
+
+    for point in points:
+
+        label_lon = point['lon']
+
+        # Ищем уже размещённые плашки рядом
+        while any(
+            abs(label_lon - p['label_lon']) < MIN_LON_DISTANCE
+            and abs(
+                (point['lat'] + LABEL_HEIGHT) -
+                p['label_lat']
+            ) < 2.0
+            for p in placed
+        ):
+            label_lon += MIN_LON_DISTANCE
+
+        point['label_lon'] = label_lon
+        point['label_lat'] = point['lat'] + LABEL_HEIGHT
+
+        placed.append(point)
+
+    return placed
+
+
+label_points = calculate_label_positions(df_clean)
+
+
+# ============================================================
+# 8. ЛИНИИ ОТ ТОЧЕК К ПЛАШКАМ
+# ============================================================
+
+line_lons = []
+line_lats = []
+
+for p in label_points:
+
+    line_lons.extend([
+        p['lon'],
+        p['label_lon'],
+        None
+    ])
+
+    line_lats.extend([
+        p['lat'],
+        p['label_lat'],
+        None
+    ])
+
+
+fig.add_trace(
+    go.Scattermap(
+        lon=line_lons,
+        lat=line_lats,
+        mode='lines',
+        line=dict(
+            width=1,
+            color='black'
+        ),
+        hoverinfo='skip',
+        showlegend=False,
+        name='Линии подписей'
+    )
+)
+
+
+# ============================================================
+# 9. ПЛАШКИ
+# ============================================================
+
+label_text = []
+
+for p in label_points:
+
+    volume = p['volume']
+
+    # Форматируем число
+    if pd.notna(volume):
+        volume_text = f"{volume:,.0f}".replace(",", " ")
+    else:
+        volume_text = "нет данных"
+
+    text = (
+        f"<b>{p['station']}</b>"
+        f"<br>"
+        f"Объём: {volume_text} т/мес"
+    )
+
+    label_text.append(text)
+
+
+fig.add_trace(
+    go.Scattermap(
+        lon=[p['label_lon'] for p in label_points],
+        lat=[p['label_lat'] for p in label_points],
+
+        mode='markers+text',
+
+        text=label_text,
+
+        textposition='middle center',
+
+        textfont=dict(
+            size=10,
+            color='black',
+            family='Arial, sans-serif'
+        ),
+
+        marker=dict(
+            size=1,
+            opacity=0
+        ),
+
+        hoverinfo='skip',
+        showlegend=False,
+        name='Плашки'
+    )
+)
+
+
+# ============================================================
+# 10. СТИЛЬ КАРТЫ
+# ============================================================
+
+fig.update_layout(
+    map_style='open-street-map',
+
+    margin={
+        "r": 0,
+        "t": 40,
+        "l": 0,
+        "b": 0
+    }
+)
+
+
+# ============================================================
+# 11. ПОКАЗ
+# ============================================================
+
+fig.show()
+
+# Сохранение:
+# fig.write_html("карта_станций.html")
