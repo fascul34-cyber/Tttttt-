@@ -1,0 +1,212 @@
+let
+    Source = GeoJSON,
+
+    // ---------------------------------------------------------
+    // Функция превращает один набор координат:
+    // [[lon,lat],[lon,lat],...]
+    // в SVG path
+    // ---------------------------------------------------------
+
+    MakeRingPath = (Ring as list) as text =>
+        let
+            Points =
+                List.Transform(
+                    Ring,
+                    each
+                        let
+                            Lon = Number.From(_{0}),
+                            Lat = Number.From(_{1})
+                        in
+                            Number.ToText(
+                                Lon,
+                                "0.############",
+                                "en-US"
+                            )
+                            & ","
+                            &
+                            Number.ToText(
+                                Lat,
+                                "0.############",
+                                "en-US"
+                            )
+                ),
+
+            FirstPoint =
+                if List.Count(Points) > 0
+                then Points{0}
+                else "",
+
+            RestPoints =
+                if List.Count(Points) > 1
+                then List.Skip(Points, 1)
+                else {},
+
+            Path =
+                if FirstPoint = ""
+                then ""
+                else
+                    "M " & FirstPoint
+                    & " L "
+                    & Text.Combine(RestPoints, " L ")
+                    & " Z"
+        in
+            Path,
+
+
+    // ---------------------------------------------------------
+    // Polygon
+    //
+    // coordinates:
+    // [
+    //   [ [lon,lat], [lon,lat], ... ],
+    //   [ [lon,lat], [lon,lat], ... ]
+    // ]
+    // ---------------------------------------------------------
+
+    MakePolygonPath = (Coordinates as list) as text =>
+        let
+            Rings =
+                List.Transform(
+                    Coordinates,
+                    each MakeRingPath(_)
+                ),
+
+            Result =
+                Text.Combine(
+                    List.Select(
+                        Rings,
+                        each _ <> ""
+                    ),
+                    " "
+                )
+        in
+            Result,
+
+
+    // ---------------------------------------------------------
+    // MultiPolygon
+    //
+    // coordinates:
+    // [
+    //   [
+    //      [ [lon,lat], ... ]
+    //   ],
+    //   [
+    //      [ [lon,lat], ... ]
+    //   ]
+    // ]
+    // ---------------------------------------------------------
+
+    MakeMultiPolygonPath = (Coordinates as list) as text =>
+        let
+            Polygons =
+                List.Transform(
+                    Coordinates,
+                    each MakePolygonPath(_)
+                ),
+
+            Result =
+                Text.Combine(
+                    List.Select(
+                        Polygons,
+                        each _ <> ""
+                    ),
+                    " "
+                )
+        in
+            Result,
+
+
+    // ---------------------------------------------------------
+    // Создаём SVG path
+    // ---------------------------------------------------------
+
+    AddSVGPath =
+        Table.AddColumn(
+            Source,
+            "SVGPath",
+            each
+                let
+                    GeometryType =
+                        [#"features.geometry.type"],
+
+                    CoordinatesText =
+                        [#"features.geometry.coordinates"],
+
+                    Coordinates =
+                        if Value.Is(
+                            CoordinatesText,
+                            type text
+                        )
+                        then
+                            Json.Document(
+                                CoordinatesText
+                            )
+                        else
+                            CoordinatesText,
+
+                    Path =
+                        if GeometryType = "Polygon"
+                        then
+                            MakePolygonPath(
+                                Coordinates
+                            )
+
+                        else if GeometryType = "MultiPolygon"
+                        then
+                            MakeMultiPolygonPath(
+                                Coordinates
+                            )
+
+                        else
+                            ""
+                in
+                    Path,
+            type text
+        ),
+
+
+    // ---------------------------------------------------------
+    // Оставляем только реальные геометрии
+    // ---------------------------------------------------------
+
+    Filtered =
+        Table.SelectRows(
+            AddSVGPath,
+            each
+                [SVGPath] <> null
+                and [SVGPath] <> ""
+        ),
+
+
+    // ---------------------------------------------------------
+    // Переименовываем несколько колонок
+    // чтобы потом было проще работать в DAX
+    // ---------------------------------------------------------
+
+    Renamed =
+        Table.RenameColumns(
+            Filtered,
+            {
+                {
+                    "features.properties.name",
+                    "RegionName"
+                },
+                {
+                    "features.properties.id",
+                    "RegionID"
+                },
+                {
+                    "features.geometry.type",
+                    "GeometryType"
+                },
+                {
+                    "featuresid",
+                    "FeatureID"
+                }
+            },
+            MissingField.Ignore
+        )
+
+in
+    Renamed
