@@ -1,0 +1,248 @@
+let
+    Source = GeoJSON,
+
+    // =========================================================
+    // Проверяем, является ли значение парой координат:
+    //
+    // [longitude, latitude]
+    //
+    // Например:
+    // [89.6332110187008, 55.123456]
+    // =========================================================
+
+    IsCoordinatePair = (x as any) as logical =>
+        if not Value.Is(x, type list) then
+            false
+        else if List.Count(x) < 2 then
+            false
+        else
+            Value.Is(x{0}, type number)
+            and
+            Value.Is(x{1}, type number),
+
+
+    // =========================================================
+    // Преобразуем пару координат в текст
+    // =========================================================
+
+    CoordinateText = (x as list) as text =>
+        Number.ToText(
+            Number.From(x{0}),
+            "0.############",
+            "en-US"
+        )
+        &
+        ","
+        &
+        Number.ToText(
+            Number.From(x{1}),
+            "0.############",
+            "en-US"
+        ),
+
+
+    // =========================================================
+    // Преобразуем один контур:
+    //
+    // [
+    //   [lon,lat],
+    //   [lon,lat],
+    //   [lon,lat]
+    // ]
+    //
+    // в:
+    //
+    // M lon,lat L lon,lat L lon,lat Z
+    // =========================================================
+
+    RingToPath = (Ring as list) as text =>
+        let
+
+            Points =
+                List.Transform(
+                    Ring,
+                    each CoordinateText(_)
+                ),
+
+            Result =
+                if List.Count(Points) = 0 then
+                    ""
+
+                else if List.Count(Points) = 1 then
+                    "M " & Points{0}
+
+                else
+                    "M "
+                    & Points{0}
+                    & " L "
+                    & Text.Combine(
+                        List.Skip(
+                            Points,
+                            1
+                        ),
+                        " L "
+                    )
+                    & " Z"
+
+        in
+            Result,
+
+
+    // =========================================================
+    // ГЛАВНАЯ РЕКУРСИВНАЯ ФУНКЦИЯ
+    //
+    // Она умеет работать с:
+    //
+    // Polygon
+    // MultiPolygon
+    // любым количеством вложенных List
+    //
+    // =========================================================
+
+    MakeSVGPath = (x as any) as text =>
+        let
+
+            Result =
+
+                // -------------------------------------------------
+                // Если это непосредственно [longitude, latitude]
+                // -------------------------------------------------
+
+                if IsCoordinatePair(x) then
+
+                    RingToPath(
+                        {x}
+                    )
+
+
+                // -------------------------------------------------
+                // Если это список
+                // -------------------------------------------------
+
+                else if Value.Is(x, type list) then
+
+                    let
+
+                        Count =
+                            List.Count(x),
+
+                        First =
+                            if Count > 0
+                            then x{0}
+                            else null,
+
+
+                        // -----------------------------------------
+                        // Список непосредственно содержит
+                        // пары координат
+                        //
+                        // [
+                        //   [lon,lat],
+                        //   [lon,lat]
+                        // ]
+                        // -----------------------------------------
+
+                        IsRing =
+                            Count > 0
+                            and
+                            IsCoordinatePair(First),
+
+
+                        RingResult =
+                            if IsRing then
+                                RingToPath(x)
+                            else
+                                "",
+
+
+                        // -----------------------------------------
+                        // Если это более глубокая структура:
+                        //
+                        // MultiPolygon
+                        // Polygon
+                        // и т.д.
+                        // -----------------------------------------
+
+                        Children =
+                            if IsRing then
+                                ""
+
+                            else
+                                Text.Combine(
+                                    List.Transform(
+                                        x,
+                                        each MakeSVGPath(_)
+                                    ),
+                                    " "
+                                ),
+
+                        FinalResult =
+                            if IsRing then
+                                RingResult
+                            else
+                                Children
+
+                    in
+                        FinalResult
+
+
+                // -------------------------------------------------
+                // Если это число или что-то другое
+                // -------------------------------------------------
+
+                else
+                    ""
+
+        in
+            Result,
+
+
+    // =========================================================
+    // Создаём колонку SVGPath
+    // =========================================================
+
+    AddSVGPath =
+        Table.AddColumn(
+            Source,
+            "SVGPath",
+            each
+
+                let
+
+                    GeometryType =
+                        [#"features.geometry.type"],
+
+                    Coordinates =
+                        [#"features.geometry.coordinates"],
+
+                    SVGPath =
+                        if Coordinates = null then
+                            ""
+
+                        else
+                            MakeSVGPath(
+                                Coordinates
+                            )
+
+                in
+                    SVGPath,
+
+            type text
+        ),
+
+
+    // =========================================================
+    // Оставляем только объекты с геометрией
+    // =========================================================
+
+    Filtered =
+        Table.SelectRows(
+            AddSVGPath,
+            each
+                [SVGPath] <> null
+                and
+                [SVGPath] <> ""
+        )
+
+in
+    Filtered
