@@ -1,0 +1,249 @@
+let
+    Source = GeoJSON,
+
+    // =========================================================
+    // Определяем пару [Longitude, Latitude]
+    // =========================================================
+
+    IsCoordinatePair = (x as any) as logical =>
+        try
+            Value.Is(x, type list)
+            and List.Count(x) >= 2
+            and Value.Is(x{0}, type number)
+            and Value.Is(x{1}, type number)
+        otherwise
+            false,
+
+
+    // =========================================================
+    // Форматирование числа
+    // =========================================================
+
+    Num = (x as number) as text =>
+        Number.ToText(
+            x,
+            "0.############",
+            "en-US"
+        ),
+
+
+    // =========================================================
+    // Пара координат
+    // =========================================================
+
+    PointToText = (Point as list) as text =>
+        Num(Number.From(Point{0}))
+        & ","
+        & Num(Number.From(Point{1})),
+
+
+    // =========================================================
+    // Один набор координат:
+    //
+    // [[lon,lat],[lon,lat],...]
+    // =========================================================
+
+    RingToPath = (Ring as list) as text =>
+        let
+
+            Points =
+                List.Transform(
+                    Ring,
+                    each PointToText(_)
+                ),
+
+            Result =
+                if List.Count(Points) = 0 then
+                    ""
+
+                else
+                    "M "
+                    & Text.Combine(
+                        Points,
+                        " L "
+                    )
+                    & " Z"
+
+        in
+            Result,
+
+
+    // =========================================================
+    // РЕКУРСИВНЫЙ обработчик
+    //
+    // Он может получить:
+    //
+    // [lon,lat]
+    //
+    // или
+    //
+    // [[lon,lat],[lon,lat]]
+    //
+    // или
+    //
+    // [[[lon,lat],...]]
+    //
+    // или
+    //
+    // [[[[lon,lat],...]]]
+    //
+    // =========================================================
+
+    BuildPath = (x as any) as text =>
+        let
+
+            Result =
+
+                if x = null then
+                    ""
+
+
+                // -----------------------------------------------
+                // Если это непосредственно [lon,lat]
+                // -----------------------------------------------
+
+                else if IsCoordinatePair(x) then
+
+                    PointToText(x)
+
+
+                // -----------------------------------------------
+                // Если это список
+                // -----------------------------------------------
+
+                else if Value.Is(x, type list) then
+
+                    let
+
+                        Items =
+                            List.RemoveNulls(x),
+
+                        ChildResults =
+                            List.Transform(
+                                Items,
+                                each BuildPath(_)
+                            ),
+
+                        ValidResults =
+                            List.Select(
+                                ChildResults,
+                                each _ <> ""
+                            ),
+
+                        Combined =
+                            Text.Combine(
+                                ValidResults,
+                                "|"
+                            )
+
+                    in
+                        Combined
+
+
+                else
+                    ""
+
+        in
+            Result,
+
+
+    // =========================================================
+    // Теперь нам нужно не просто пройти дерево,
+    // а определить отдельные кольца.
+    // =========================================================
+
+    GetRings = (x as any) as list =>
+        let
+
+            Result =
+
+                if x = null then
+                    {}
+
+                else if IsCoordinatePair(x) then
+                    {x}
+
+                else if Value.Is(x, type list) then
+
+                    let
+
+                        Items =
+                            List.RemoveNulls(x),
+
+                        IsRing =
+                            List.Count(Items) > 0
+                            and
+                            List.AllTrue(
+                                List.Transform(
+                                    Items,
+                                    each IsCoordinatePair(_)
+                                )
+                            )
+
+                    in
+
+                        if IsRing then
+                            {Items}
+
+                        else
+                            List.Combine(
+                                List.Transform(
+                                    Items,
+                                    each GetRings(_)
+                                )
+                            )
+
+                else
+                    {}
+
+        in
+            Result,
+
+
+    // =========================================================
+    // Создаём SVGPath
+    // =========================================================
+
+    AddSVGPath =
+        Table.AddColumn(
+            Source,
+            "SVGPath",
+            each
+
+                let
+
+                    Coordinates =
+                        [#"features.geometry.coordinates"],
+
+                    Rings =
+                        GetRings(
+                            Coordinates
+                        ),
+
+                    Paths =
+                        List.Transform(
+                            Rings,
+                            each RingToPath(_)
+                        ),
+
+                    ValidPaths =
+                        List.Select(
+                            Paths,
+                            each _ <> ""
+                        ),
+
+                    SVGPath =
+                        Text.Combine(
+                            ValidPaths,
+                            " "
+                        )
+
+                in
+
+                    SVGPath,
+
+            type text
+        )
+
+in
+    AddSVGPath
